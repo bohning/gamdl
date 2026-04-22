@@ -5,7 +5,6 @@ import json
 import re
 import struct
 from typing import AsyncGenerator, Callable
-from xml.dom import minidom
 from xml.etree import ElementTree
 
 import m3u8
@@ -30,6 +29,9 @@ from .types import (
 )
 
 logger = structlog.get_logger(__name__)
+ElementTree.register_namespace("", "http://www.w3.org/ns/ttml")
+ElementTree.register_namespace("itunes", "http://music.apple.com/lyric-ttml-internal")
+ElementTree.register_namespace("ttm", "http://www.w3.org/ns/ttml#metadata")
 
 
 class AppleMusicSongInterface:
@@ -64,7 +66,8 @@ class AppleMusicSongInterface:
 
         if (
             "relationships" not in song_metadata
-            or "lyrics" not in song_metadata["relationships"]
+            or ("lyrics" not in song_metadata["relationships"]
+                and "syllable-lyrics" not in song_metadata["relationships"])
         ):
             song_metadata = (
                 await self.base.apple_music_api.get_song(
@@ -72,8 +75,22 @@ class AppleMusicSongInterface:
                 )
             )["data"][0]
 
+        # Prioritize syllable-lyrics (word/syllable-level timing) over regular lyrics
+        lyrics_data = None
+        
         if (
-            "lyrics" in song_metadata["relationships"]
+            "syllable-lyrics" in song_metadata.get("relationships", {})
+            and "data" in song_metadata["relationships"]["syllable-lyrics"]
+            and len(song_metadata["relationships"]["syllable-lyrics"]["data"]) > 0
+            and "attributes" in song_metadata["relationships"]["syllable-lyrics"]["data"][0]
+            and song_metadata["relationships"]["syllable-lyrics"]["data"][0]["attributes"].get(
+                "ttml"
+            )
+            is not None
+        ):
+            lyrics_data = song_metadata["relationships"]["syllable-lyrics"]["data"][0]["attributes"]["ttml"]
+        elif (
+            "lyrics" in song_metadata.get("relationships", {})
             and "data" in song_metadata["relationships"]["lyrics"]
             and len(song_metadata["relationships"]["lyrics"]["data"]) > 0
             and "attributes" in song_metadata["relationships"]["lyrics"]["data"][0]
@@ -82,17 +99,15 @@ class AppleMusicSongInterface:
             )
             is not None
         ):
-            lyrics = self._get_lyrics(
-                song_metadata["relationships"]["lyrics"]["data"][0]["attributes"][
-                    "ttml"
-                ],
-            )
+            lyrics_data = song_metadata["relationships"]["lyrics"]["data"][0]["attributes"]["ttml"]
 
+        if lyrics_data is not None:
+            lyrics = self._get_lyrics(lyrics_data)
             log.debug("success", lyrics=lyrics)
-
             return lyrics
         else:
             log.debug("no_lyrics_data")
+            return None
 
     def _get_lyrics(
         self,
@@ -120,9 +135,15 @@ class AppleMusicSongInterface:
 
                     if self.synced_lyrics_format == SyncedLyricsFormat.TTML:
                         if not synced_lyrics:
-                            synced_lyrics.append(
-                                minidom.parseString(lyrics_ttml).toprettyxml()
-                            )
+                            for elem in lyrics_ttml_et.iter():
+                                if elem.tail:
+                                    current_text = elem.text or ""
+                                    elem.text = current_text + elem.tail
+                                    elem.tail = None
+
+                            ElementTree.indent(lyrics_ttml_et, space="  ")
+                            pretty_xml = ElementTree.tostring(lyrics_ttml_et, encoding="unicode")
+                            synced_lyrics.append(pretty_xml)
                         continue
 
                     index += 1
@@ -505,7 +526,13 @@ class AppleMusicSongInterface:
 
         media.tags = await self.get_tags(
             webplayback,
-            media.lyrics.unsynced if media.lyrics else None,
+            (
+                media.lyrics.synced
+                if media.lyrics
+                #and self.synced_lyrics_format == SyncedLyricsFormat.TTML
+                and media.lyrics.synced is not None
+                else media.lyrics.unsynced if media.lyrics else None
+            ),
         )
 
         if not self.skip_stream_info:

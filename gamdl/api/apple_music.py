@@ -79,10 +79,14 @@ class AppleMusicApi:
                 )
                 response.raise_for_status()
                 home_page = response.text
-            except httpx.HTTPError:
+            except httpx.HTTPStatusError as e:
                 raise GamdlApiResponseError(
-                    "Error fetching Apple Music homepage",
-                    status_code=response.status_code if response is not None else None,
+                    "Error fetching Apple Music homepage: {e}",
+                    status_code=e.response.status_code,
+                )
+            except httpx.RequestError as e:
+                raise GamdlApiResponseError(
+                    f"Network error: {e}"
                 )
 
         index_js_uri_match = re.search(
@@ -142,10 +146,14 @@ class AppleMusicApi:
                 )
                 response.raise_for_status()
                 account_info = response.json()
-            except httpx.HTTPError:
+            except httpx.HTTPStatusError as e:
                 raise GamdlApiResponseError(
                     "Error fetching account info",
-                    status_code=response.status_code if response is not None else None,
+                    status_code=e.response.status_code,
+                )
+            except httpx.RequestError as e:
+                raise GamdlApiResponseError(
+                    f"Network error: {e}"
                 )
 
         log.debug("success", account_info=account_info)
@@ -216,14 +224,15 @@ class AppleMusicApi:
     ) -> "AppleMusicApi":
         cookies = MozillaCookieJar(cookies_path)
         cookies.load(ignore_discard=True, ignore_expires=True)
-        parse_cookie = lambda name: next(
-            (
-                cookie.value
-                for cookie in cookies
-                if cookie.name == name and cookie.domain == APPLE_MUSIC_COOKIE_DOMAIN
-            ),
-            None,
-        )
+        def parse_cookie(name):
+            return next(
+                (
+                    cookie.value
+                    for cookie in cookies
+                    if cookie.name == name and cookie.domain == APPLE_MUSIC_COOKIE_DOMAIN
+                ),
+                None,
+            )
 
         media_user_token = parse_cookie("media-user-token")
         if not media_user_token:
@@ -252,10 +261,14 @@ class AppleMusicApi:
                 response = await client.get(wrapper_account_url)
                 response.raise_for_status()
                 wrapper_account_info = response.json()
-            except httpx.HTTPError:
+            except httpx.HTTPStatusError as e:
                 raise GamdlApiResponseError(
                     "Error fetching wrapper account info",
-                    status_code=response.status_code if response is not None else None,
+                    status_code=e.response.status_code,
+                )
+            except httpx.RequestError as e:
+                raise GamdlApiResponseError(
+                    f"Network error: {e}"
                 )
 
         return await cls.create(
@@ -278,11 +291,15 @@ class AppleMusicApi:
             )
             response.raise_for_status()
             response_json = response.json()
-        except httpx.HTTPError:
+        except httpx.HTTPStatusError as e:
             raise GamdlApiResponseError(
                 "Error fetching from AMP API",
-                content=response.text if response is not None else None,
-                status_code=response.status_code if response is not None else None,
+                content=e.response.text,
+                status_code=e.response.status_code,
+            )
+        except httpx.RequestError as e:
+            raise GamdlApiResponseError(
+                f"Network error: {e}"
             )
 
         if "errors" in response_json:
@@ -297,7 +314,7 @@ class AppleMusicApi:
         self,
         song_id: str,
         extend: str = "extendedAssetUrls",
-        include: str = "lyrics,albums",
+        include: str = "syllable-lyrics,albums",
     ) -> dict:
         log = logger.bind(action="get_song", song_id=song_id)
 
@@ -501,7 +518,7 @@ class AppleMusicApi:
         self,
         next_uri: str | None,
         href_uri: str,
-    ) -> dict:
+    ) -> dict | None:
         log = logger.bind(
             action="extend_api_data", next_uri=next_uri, href_uri=href_uri
         )
@@ -549,11 +566,15 @@ class AppleMusicApi:
             )
             response.raise_for_status()
             webplayback = response.json()
-        except httpx.HTTPError:
+        except httpx.HTTPStatusError as e:
             raise GamdlApiResponseError(
                 "Error fetching webplayback data",
-                content=response.text if response is not None else None,
-                status_code=response.status_code if response is not None else None,
+                content=e.response.text,
+                status_code=e.response.status_code,
+            )
+        except httpx.RequestError as e:
+            raise GamdlApiResponseError(
+                f"Network error: {e}"
             )
 
         if "dialog" in webplayback:
@@ -591,11 +612,15 @@ class AppleMusicApi:
             )
             response.raise_for_status()
             license_exchange = response.json()
-        except httpx.HTTPError:
+        except httpx.HTTPStatusError as e:
             raise GamdlApiResponseError(
                 "Error fetching license exchange data",
-                content=response.text if response is not None else None,
-                status_code=response.status_code if response is not None else None,
+                content=e.response.text,
+                status_code=e.response.status_code,
+            )
+        except httpx.RequestError as e:
+            raise GamdlApiResponseError(
+                f"Network error: {e}"
             )
 
         if license_exchange.get("status") != 0:
